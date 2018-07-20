@@ -5,7 +5,7 @@
 1. region
 1. env_id
   这是一个dict，需要设置下列值的uuid
-	- env_id['ImageId']['default']
+  - env_id['ImageId']['default']
   - env_id['SubnetId']['default']
   - env_id['SecurityGroupId']['default']
 
