@@ -11,8 +11,13 @@
 
 # 使用命令
 ```
-创建命令:后面三个参数，第一个参数为创建的数目，第二个参数为创建的类型，第三个为数据盘的大小
-python kec.py call create_inst 50 I2.4B 200
+创建命令:后面参数，第一个参数为创建的数目，第二个参数为创建的类型，第三个为数据盘的大小，第四个为可用区位置
+
+# 在可用区A创建500台 I2.4B型主机，挂200G数据盘
+python kec.py call create_inst 500 I2.4B 200 A
+
+# 在可用区B创建500台 I1.4B型主机，挂200G数据盘
+python kec.py call create_inst 500 I1.4B 200 B
 
 删除命令
 python kec.py call batch_inst destroy

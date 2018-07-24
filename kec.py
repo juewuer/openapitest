@@ -7,6 +7,11 @@ import time
 import getopt
 import random
 import datetime
+# in the Authorization header.
+import sys, os, base64, datetime, hashlib, hmac
+import requests # pip install requests
+from urllib import urlencode
+import traceback
 
 reload(sys)
 sys.path.append("..")
@@ -14,11 +19,10 @@ sys.path.append("../..")
 sys.setdefaultencoding('utf-8')
 
 
-from lib.user_server import *
-program_version= '1.0.0H'
+program_version= '1.0.1H'
 
-g_RunInstances_Max=2
-g_Batch_Max=2
+g_RunInstances_Max=50
+g_Batch_Max=50
 
 service = 'kec'
 #region = 'cn-shanghai-3'
@@ -29,6 +33,23 @@ endpoint = 'http://%s/' % host
 access_key =''
 secret_key = ''
 
+env_id ={}
+
+env_id = {
+	'ImageId':{
+		'centos7':'d3410864-1cf1-418f-9afe-c70aa3fa9cd4',
+		'default':'d3410864-1cf1-418f-9afe-c70aa3fa9cd4',
+	},
+	'SubnetId': {
+		'A': '7d534941-e8d6-4402-8736-8aee21a88229',
+		'B': '2d889188-abe5-411a-9d1c-8bbd91003072',
+		'default': '7d534941-e8d6-4402-8736-8aee21a88229',
+	},
+	'SecurityGroupId': {
+		'default': '155c57ac-8369-4d64-afe4-31f7775c0e0a',
+	},
+}	
+	
 version='2016-03-04'
 
 if(not access_key or not secret_key):
@@ -41,6 +62,124 @@ def my_exit(msg=""):
 
 logfilename = time.strftime('kec-test-%Y-%m-%d.log', time.localtime(time.time()))
 flog = open(logfilename, 'a+')
+
+
+class AwsRequest(object):
+	'''
+	__init__ method
+	'''
+
+	def __init__(self, service, host, region, endpoint, access_key, secret_key):
+		self.method = 'GET'
+		self.service = service
+		self.host = host
+		self.region = region
+		self.endpoint = endpoint
+
+		if access_key is None or secret_key is None:
+			print 'No access key is available.'
+			sys.exit()
+		self.access_key = access_key
+		self.secret_key = secret_key
+
+	def __str__(self):
+		return '%s,%s' % (self.host, self.service)
+
+	@staticmethod
+	def sign(key, msg):
+		return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
+
+	@staticmethod
+	def getSignatureKey(key, dateStamp, regionName, serviceName):
+		kDate = AwsRequest.sign(('AWS4' + key).encode('utf-8'), dateStamp)
+		kRegion = AwsRequest.sign(kDate, regionName)
+		kService = AwsRequest.sign(kRegion, serviceName)
+		kSigning = AwsRequest.sign(kService, 'aws4_request')
+		return kSigning
+
+	def getHeaderse(self, request_parameters):
+		# Create a date for headers and the credential string
+		t = datetime.datetime.utcnow()
+		amzdate = t.strftime('%Y%m%dT%H%M%SZ')
+		datestamp = t.strftime('%Y%m%d')  # Date w/o time, used in credential scope
+
+		# ************* TASK 1: CREATE A CANONICAL REQUEST *************
+		# http://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html
+
+		# Step 1 is to define the verb (GET, POST, etc.)--already done.
+
+		# Step 2: Create canonical URI--the part of the URI from domain to query
+		# string (use '/' if no path)
+		canonical_uri = '/'
+
+		# Step 3: Create the canonical query string. In this example (a GET request),
+		# request parameters are in the query string. Query string values must
+		# be URL-encoded (space=%20). The parameters must be sorted by name.
+		# For this example, the query string is pre-formatted in the request_parameters variable.
+		request_parameters = sorted(request_parameters.items(), key=lambda d: d[0])
+		canonical_querystring = urlencode(request_parameters)
+
+		# Step 4: Create the canonical headers and signed headers. Header names
+		# must be trimmed and lowercase, and sorted in code point order from
+		# low to high. Note that there is a trailing \n.
+		canonical_headers = 'host:' + self.host + '\n' + 'x-amz-date:' + amzdate + '\n'
+
+		# Step 5: Create the list of signed headers. This lists the headers
+		# in the canonical_headers list, delimited with ";" and in alpha order.
+		# Note: The request can include any headers; canonical_headers and
+		# signed_headers lists those that you want to be included in the
+		# hash of the request. "Host" and "x-amz-date" are always required.
+		signed_headers = 'host;x-amz-date'
+
+		# Step 6: Create payload hash (hash of the request body content). For GET
+		# requests, the payload is an empty string ("").
+		payload_hash = hashlib.sha256('').hexdigest()
+
+		# Step 7: Combine elements to create create canonical request
+		canonical_request = self.method + '\n' + canonical_uri + '\n' + canonical_querystring + '\n' + canonical_headers + '\n' + signed_headers + '\n' + payload_hash
+
+		# ************* TASK 2: CREATE THE STRING TO SIGN*************
+		# Match the algorithm to the hashing algorithm you use, either SHA-1 or
+		# SHA-256 (recommended)
+		algorithm = 'AWS4-HMAC-SHA256'
+		credential_scope = datestamp + '/' + self.region + '/' + self.service + '/' + 'aws4_request'
+		string_to_sign = algorithm + '\n' + amzdate + '\n' + credential_scope + '\n' + hashlib.sha256(
+			canonical_request).hexdigest()
+
+		# ************* TASK 3: CALCULATE THE SIGNATURE *************
+		# Create the signing key using the function defined above.
+		signing_key = AwsRequest.getSignatureKey(self.secret_key, datestamp, self.region, self.service)
+
+		# Sign the string_to_sign using the signing_key
+		signature = hmac.new(signing_key, (string_to_sign).encode('utf-8'), hashlib.sha256).hexdigest()
+
+		# ************* TASK 4: ADD SIGNING INFORMATION TO THE REQUEST *************
+		# The signing information can be either in a query string value or in
+		# a header named Authorization. This code shows how to use a header.
+		# Create authorization header and add to request headers
+		authorization_header = algorithm + ' ' + 'Credential=' + self.access_key + '/' + credential_scope + ', ' + 'SignedHeaders=' + signed_headers + ', ' + 'Signature=' + signature
+
+		# The request can include any headers, but MUST include "host", "x-amz-date",
+		# and (for this scenario) "Authorization". "host" and "x-amz-date" must
+		# be included in the canonical_headers and signed_headers, as noted
+		# earlier. Order here is not significant.
+		# Python note: The 'host' header is added automatically by the Python 'requests' library.
+		headers = {'x-amz-date': amzdate, 'Authorization': authorization_header, "Accept": "application/json"}
+		# ************* SEND THE REQUEST *************
+		request_url = self.endpoint + '?' + canonical_querystring
+		return request_url, headers
+
+	def sendRequest(self, request_parameters):
+		request_url, headers = self.getHeaderse(request_parameters)
+		# print 'Request URL = ' + request_url
+		try:
+			rep = requests.get(request_url, headers=headers, timeout=10)
+		# print 'Response code: %d\n' % rep.status_code
+		except Exception, e:
+			print "headers: %s" % headers
+			traceback.print_exc()
+		return rep, headers
+
 
 def get_kec_data(param):
 	request_parameters = param
@@ -146,50 +285,9 @@ def batch_op_inst(op, *kecs):
 	if(ret != 200):
 		print  ret, value;
 
-env_id ={}
-
-if(region == 'cn-shanghai-3'):
-	env_id = {
-		'ImageId':{
-			'default':'b2e78146-58f1-4298-9397-ebf942246a2b',
-		},
-		'SubnetId': {
-			'default': '9d66690a-9f64-470c-847d-7d208af20566',
-		},
-		'SecurityGroupId': {
-			'default': '62394380-7099-4141-bc19-dfeb1de37bf4',
-		},
-	}
-elif(region == 'cn-beijing-6'):
-	env_id = {
-		'ImageId':{
-			'centos7':'d3410864-1cf1-418f-9afe-c70aa3fa9cd4',
-			'default':'d3410864-1cf1-418f-9afe-c70aa3fa9cd4',
-		},
-		'SubnetId': {
-			'default': 'b0594c84-3cde-42be-8f64-8dbfc85ba694',
-		},
-		'SecurityGroupId': {
-			'default': 'ed708421-6fb1-44ce-b805-3af8e561414c',
-		},
-	}
-elif(region == 'cn-shanghai-2'):
-	env_id = {
-		'ImageId':{
-			'centos7':'d3410864-1cf1-418f-9afe-c70aa3fa9cd4',
-			'default':'d3410864-1cf1-418f-9afe-c70aa3fa9cd4',
-		},
-		'SubnetId': {
-			'net1': '7d534941-e8d6-4402-8736-8aee21a88229',
-			'default': '7d534941-e8d6-4402-8736-8aee21a88229',
-		},
-		'SecurityGroupId': {
-			'default': '155c57ac-8369-4d64-afe4-31f7775c0e0a',
-		},
-	}
 
 g_starttime = ''
-def create_inst(count=1, type='I1.1A',disk=10):
+def create_inst(count=1, type='I1.1A',disk=10,az='A'):
 	global g_starttime
 	totalcount = int(count)
 	disk=int(disk)
@@ -205,10 +303,10 @@ def create_inst(count=1, type='I1.1A',disk=10):
 		else:
 			cr = count
 			rec = 1
-		create_inst_one(cr,type,disk,rec,remain=count)
+		create_inst_one(cr,type,disk,rec,remain=count,az=az)
 		count = count - cr
 
-def create_inst_one(count=1, type='I1.1A',disk=10, record=1,remain=0):
+def create_inst_one(count=1, type='I1.1A',disk=10, record=1,remain=0,az='A'):
 	request_parameters = {
 		"Action": "RunInstances",
 		'Version': version,
@@ -225,7 +323,8 @@ def create_inst_one(count=1, type='I1.1A',disk=10, record=1,remain=0):
 	}
 	for param in ['ImageId','SubnetId','SecurityGroupId']:
 		request_parameters[param]=env_id[param]['default']
-
+	if(env_id['SubnetId'].get(az)):
+		request_parameters['SubnetId'] = env_id['SubnetId'].get(az)
 	starttime = datetime.datetime.now()
 
 	#nowTime = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -342,7 +441,7 @@ class KecInst(KecObj):
 def print_help_msg():
 	print U'''
 创建命令:后面三个参数，第一个参数为创建的数目，第二个参数为创建的类型，第三个为数据盘的大小
-python kec.py call create_inst 50 I2.4B 200
+python kec.py call create_inst 50 I2.4B 200 A
 
 删除命令
 python kec.py call batch_inst destroy
